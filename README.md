@@ -1,6 +1,20 @@
 ### Usage
 See [Homebrew_Applications](https://switchbrew.org/wiki/Homebrew_Applications) for SD layout and applications, etc. See [Switchbrew](https://switchbrew.org/wiki/Homebrew_Menu) for hbmenu docs.
 
+### Shortcuts
+
+Place `shortcuts.txt` in `/switch/` (next to hbmenu's app folders). Each line
+adds a shortcut at the hbmenu root:
+
+```text
+RetroArch=sdmc:/switch/retroarch/retroarch_switch.nro
+xStarbound=sdmc:/switch/brewstore/apps/xstarbound/xStarbound.nro
+```
+
+Blank lines and lines starting with `#` are ignored. The right side must be
+an absolute `sdmc:/` path to an NRO. The shortcut uses the target NRO's
+embedded icon and metadata.
+
 ### Download
 The latest release is available from the [releases](https://github.com/switchbrew/nx-hbmenu/releases/latest) page.
 

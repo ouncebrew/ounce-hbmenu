@@ -17,6 +17,9 @@ typedef enum {
     AssetId_wifi3_icon,
     AssetId_eth_icon,
     AssetId_eth_none_icon,
+    AssetId_cursor,
+    AssetId_cursor_hover,
+    AssetId_cursor_click,
     AssetId_background_image,
 
     AssetId_Max,

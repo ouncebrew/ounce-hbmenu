@@ -80,7 +80,10 @@ static enum
     HBMENU_NETLOADER_ERROR,
     HBMENU_NETLOADER_SUCCESS,
     HBMENU_THEME_MENU,
+    HBMENU_SETTINGS_MENU,
 } hbmenu_state = HBMENU_DEFAULT;
+
+static char settingsReturnPath[PATH_MAX + 1];
 
 void launchMenuNetloaderTask() {
     if(hbmenu_state == HBMENU_DEFAULT)
@@ -96,6 +99,10 @@ void launchMenuBackTask() {
     if(hbmenu_state == HBMENU_NETLOADER_ACTIVE) {
         netloaderSignalExit();
     }
+    else if(hbmenu_state == HBMENU_SETTINGS_MENU) {
+        hbmenu_state = HBMENU_DEFAULT;
+        menuScan(settingsReturnPath[0] ? settingsReturnPath : rootPath);
+    }
     else if(hbmenu_state == HBMENU_THEME_MENU) {
         hbmenu_state = HBMENU_DEFAULT;
         menuScan(rootPath);
@@ -104,6 +111,27 @@ void launchMenuBackTask() {
         menuScan("..");
     }
 
+}
+
+void menuScrollBy(menu_s* menu, int delta) {
+    ThemeLayoutObject* tiles = &themeCurrent.layoutObjects[ThemeLayoutId_MenuListTiles];
+    ThemeLayoutObject* list = &themeCurrent.layoutObjects[ThemeLayoutId_MenuList];
+    const int visible = tiles->posEnd[0];
+    const int entry_w = list->posEnd[0];
+    if (!delta || visible <= 0 || entry_w <= 0 || menu->nEntries <= visible)
+        return;
+
+    const int min_x = -(menu->nEntries - visible) * entry_w;
+    menu->xPos += delta;
+    if (menu->xPos > 0) menu->xPos = 0;
+    if (menu->xPos < min_x) menu->xPos = min_x;
+    menu->slideSpeed = 0;
+    menu->holdXPos = true;
+}
+
+void menuScrollPage(menu_s* menu, int direction) {
+    ThemeLayoutObject* list = &themeCurrent.layoutObjects[ThemeLayoutId_MenuList];
+    menuScrollBy(menu, -direction * list->posEnd[0]);
 }
 
 void menuHandleAButton(void) {
@@ -115,13 +143,34 @@ void menuHandleAButton(void) {
     else if (hbmenu_state != HBMENU_NETLOADER_ACTIVE && menuIsMsgBoxOpen()) {
         menuCloseMsgBox();
     }
-    else if (menu->nEntries > 0 && (hbmenu_state == HBMENU_DEFAULT || hbmenu_state == HBMENU_THEME_MENU))
+    else if (menu->nEntries > 0 &&
+             (hbmenu_state == HBMENU_DEFAULT || hbmenu_state == HBMENU_THEME_MENU))
     {
         int i;
-        menuEntry_s* me;
-        for (i = 0, me = menu->firstEntry; i != menu->curEntry; i ++, me = me->next);
+        menuEntry_s* me = menu->firstEntry;
+        for (i = 0; i < menu->curEntry && me; i ++, me = me->next);
+        if (!me)
+            return;
+        /* A stale selection from the previous screen must not open anything:
+         * a real folder entry is exactly one path component below dirname. */
+        if (me->type == ENTRY_TYPE_FOLDER) {
+            const char* d = menu->dirname;
+            const size_t dlen = strlen(d);
+            const char* rest;
+            if (strncmp(me->path, d, dlen) != 0)
+                return;
+            rest = me->path + dlen;
+            if (*rest == '/')
+                rest++;
+            if (*rest == '\0' || strchr(rest, '/') != NULL)
+                return;
+        }
         launchMenuEntryTask(me);
         //workerSchedule(launchMenuEntryTask, me);
+    }
+    else if (menu->nEntries > 0 && hbmenu_state == HBMENU_SETTINGS_MENU)
+    {
+        settingsMenuToggleCurrent();
     }
 }
 
@@ -210,6 +259,10 @@ void launchApplyThemeTask(menuEntry_s* arg) {
 
 bool menuIsNetloaderActive(void) {
     return hbmenu_state == HBMENU_NETLOADER_ACTIVE;
+}
+
+bool menuIsSettingsMenu(void) {
+    return hbmenu_state == HBMENU_SETTINGS_MENU;
 }
 
 #ifdef __SWITCH2__
@@ -530,6 +583,7 @@ void menuLoadFileassoc(void) {
 
 void menuStartup(void) {
     menuLoadFileassoc();
+    menuHiddenLoad();
 
     menuScan(rootPath);
 
@@ -545,6 +599,14 @@ void themeMenuStartup(void) {
 
     themeMenuScan(tmp_path);
     menuThemeSelectCurrentEntry();
+}
+
+void settingsMenuStartup(void) {
+    if(hbmenu_state != HBMENU_DEFAULT) return;
+    menu_s* menu = menuGetCurrent();
+    snprintf(settingsReturnPath, sizeof(settingsReturnPath), "%s", menu->dirname);
+    hbmenu_state = HBMENU_SETTINGS_MENU;
+    settingsMenuScan(rootPath);
 }
 
 color_t waveBlendAdd(color_t a, color_t b, float alpha) {
@@ -696,6 +758,7 @@ void drawCharge() {
         if (isCharging && layoutobj->visible)
             drawIcon(layoutobj->posStart[0], layoutobj->posStart[1], data->imageSize[0], data->imageSize[1], data->buffer, themeCurrent.textColor);
     }
+
 }
 
 void drawNetwork(int tmpX, AssetId id) {
@@ -739,6 +802,42 @@ u32 drawStatus() {
     }
 
     return tmpX;
+}
+
+static void fillRect(int x, int y, int width, int height, color_t color) {
+    for (int row = 0; row < height; row++) {
+        int col = 0;
+        for (; col + 3 < width; col += 4)
+            Draw4PixelsRaw(x + col, y + row, color);
+        for (; col < width; col++)
+            DrawPixelRaw(x + col, y + row, color);
+    }
+}
+
+static void drawMenuScrollbar(menu_s* menu) {
+    ThemeLayoutObject* list = &themeCurrent.layoutObjects[ThemeLayoutId_MenuList];
+    ThemeLayoutObject* tiles = &themeCurrent.layoutObjects[ThemeLayoutId_MenuListTiles];
+    const int visible = tiles->posEnd[0];
+    if (visible <= 0 || menu->nEntries <= visible)
+        return;
+
+    const int track_x = list->posStart[0];
+    const int track_w = HBMENU_LOGICAL_WIDTH - track_x * 2;
+    const int track_y = list->posStart[1] + list->size[1] + 10;
+    const int track_h = 4;
+    const int entry_w = list->posEnd[0];
+    const int max_start = menu->nEntries - visible;
+    int start = entry_w > 0 ? (int)(-menu->xPos / entry_w + 0.5f) : 0;
+    if (start < 0) start = 0;
+    if (start > max_start) start = max_start;
+
+    int thumb_w = track_w * visible / menu->nEntries;
+    if (thumb_w < 40) thumb_w = 40;
+    if (thumb_w > track_w) thumb_w = track_w;
+    const int thumb_x = track_x + (track_w - thumb_w) * start / max_start;
+
+    fillRect(track_x, track_y, track_w, track_h, themeCurrent.borderColor);
+    fillRect(thumb_x, track_y, thumb_w, track_h, themeCurrent.textColor);
 }
 
 void drawButtons(menu_s* menu, bool emptyDir, int *out_basePos) {
@@ -867,18 +966,24 @@ void menuLoop(void) {
         DrawText(layoutobj->font, layoutobj->posType ? x_pos + layoutobj->posStart[0] : layoutobj->posStart[0], layoutobj->posStart[1], themeCurrent.attentionTextColor, appletMode);
     }
     const char* loaderInfo = envGetLoaderInfo();
+    char loaderDisplay[128];
+    const char* shownLoader = loaderInfo;
+    if (loaderInfo && strncmp(loaderInfo, "ounce-hbloader", 14) == 0) {
+        snprintf(loaderDisplay, sizeof(loaderDisplay), "clownce-hbloader%s", loaderInfo + 14);
+        shownLoader = loaderDisplay;
+    }
     layoutobj = &themeCurrent.layoutObjects[ThemeLayoutId_LoaderInfo];
-    if (loaderInfo && layoutobj->visible) {
+    if (shownLoader && layoutobj->visible) {
         u32 x_pos = layoutobj->posStart[0];
-        char* spacePos = strchr(loaderInfo, ' ');
+        char* spacePos = strchr(shownLoader, ' ');
         if (spacePos) {
             char tempbuf[64] = {0};
-            size_t tempsize = spacePos - loaderInfo + 1;
+            size_t tempsize = spacePos - shownLoader + 1;
             if (tempsize > sizeof(tempbuf)-1) tempsize = sizeof(tempbuf)-1;
-            memcpy(tempbuf, loaderInfo, tempsize);
+            memcpy(tempbuf, shownLoader, tempsize);
             x_pos = GetTextXCoordinate(layoutobj->font, layoutobj->posEnd[0], tempbuf, 'r');
         }
-        DrawText(layoutobj->font, x_pos, layoutobj->posStart[1], themeCurrent.textColor, loaderInfo);
+        DrawText(layoutobj->font, x_pos, layoutobj->posStart[1], themeCurrent.textColor, shownLoader);
     }
     #endif
 
@@ -942,7 +1047,10 @@ void menuLoop(void) {
 
         // Gentle Realign only when not manually moving
         if (menu->slideSpeed == 0) {
-            if (menu->nEntries > entries_count) {
+            if (menu->holdXPos) {
+                v = 0;
+            }
+            else if (menu->nEntries > entries_count) {
                 int wanted_x = clamp(-menu->curEntry * layoutobj->posEnd[0], -(menu->nEntries - entries_count) * layoutobj->posEnd[0], 0);
                 menu->xPos += v;
                 v += (wanted_x - menu->xPos) / 3;
@@ -992,6 +1100,8 @@ void menuLoop(void) {
 
             drawEntry(me, entry_draw_x, is_active);
         }
+
+        drawMenuScrollbar(menu);
 
         layoutobj = &themeCurrent.layoutObjects[ThemeLayoutId_MenuTypeMsg];
         int getX=0;
@@ -1044,4 +1154,8 @@ void menuLoop(void) {
     if (layoutobj->visible) DrawTextTruncate(layoutobj->font, layoutobj->posStart[0], layoutobj->posStart[1], themeCurrent.textColor, menu->dirname, layoutobj->size[0], "...");
 
     menuDrawMsgBox();
+#ifdef __SWITCH2__
+    extern void drawMouseCursor(void);
+    drawMouseCursor();
+#endif
 }

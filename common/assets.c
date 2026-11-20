@@ -25,6 +25,9 @@ assetsDataEntry g_assetsDataList[AssetId_Max][2] = {
     GENASSET("wifi3_icon.bin", IMAGE_MODE_RGBA32, 24, 24),
     GENASSET("eth_icon.bin", IMAGE_MODE_RGBA32, 24, 24),
     GENASSET("eth_none_icon.bin", IMAGE_MODE_RGBA32, 24, 24),
+    GENASSET("cursor.bin", IMAGE_MODE_RGBA32, 32, 32),
+    GENASSET("cursor_hover.bin", IMAGE_MODE_RGBA32, 32, 32),
+    GENASSET("cursor_click.bin", IMAGE_MODE_RGBA32, 32, 32),
     GENASSET("", IMAGE_MODE_RGB24, 1280, 720),
 };
 
