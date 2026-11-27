@@ -1005,4 +1005,63 @@ const char* const g_strings[StrId_Max][17] =
     {
         STR_EN("Cancel"),
     },
+
+    [StrId_LoadResult_NotLinked] =
+    {
+        STR_EN(
+            "This program uses shared libraries, and the loader\n"
+            "that started it cannot load them. Update kaiHEN."
+        ),
+    },
+
+    [StrId_LoadResult_LibraryNotFound] =
+    {
+        STR_EN(
+            "A shared library that this program needs is missing.\n"
+            "It must be in the program's folder or in sdmc:/kaihen/lib.\n"
+            "Update kaiHEN, or reinstall the program."
+        ),
+    },
+
+    [StrId_LoadResult_LibraryNotLoaded] =
+    {
+        STR_EN(
+            "A shared library of this program could not be loaded.\n"
+            "It is damaged, or it was made for another version.\n"
+            "Update kaiHEN, or reinstall the program."
+        ),
+    },
+
+    [StrId_LoadResult_UndefinedSymbol] =
+    {
+        STR_EN(
+            "This program and its shared libraries do not match:\n"
+            "a function or variable that it needs is missing.\n"
+            "Update kaiHEN, or update the program."
+        ),
+    },
+
+    [StrId_LoadResult_BadRelocation] =
+    {
+        STR_EN(
+            "A shared library of this program was built in a way\n"
+            "that the loader cannot load. Update the program."
+        ),
+    },
+
+    [StrId_LoadResult_PreloadNotLoaded] =
+    {
+        STR_EN(
+            "A library in sdmc:/kaihen/preload could not be loaded.\n"
+            "Remove it, or replace it."
+        ),
+    },
+
+    [StrId_LoadResult_NoRuntimeLibrary] =
+    {
+        STR_EN(
+            "This program's shared libraries do not include\n"
+            "libounce.so.1. Update kaiHEN, or reinstall the program."
+        ),
+    },
 };
