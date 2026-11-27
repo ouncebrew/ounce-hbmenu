@@ -58,6 +58,15 @@ typedef enum
     StrId_MsgBox_LaunchAnyway,
     StrId_MsgBox_Cancel,
 
+    // What a Switch 2 program's DYNLINK_RESULT_* return means.
+    StrId_LoadResult_NotLinked,
+    StrId_LoadResult_LibraryNotFound,
+    StrId_LoadResult_LibraryNotLoaded,
+    StrId_LoadResult_UndefinedSymbol,
+    StrId_LoadResult_BadRelocation,
+    StrId_LoadResult_PreloadNotLoaded,
+    StrId_LoadResult_NoRuntimeLibrary,
+
     StrId_Max,
 } StrId;
 

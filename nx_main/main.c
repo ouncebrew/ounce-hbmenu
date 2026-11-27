@@ -7,6 +7,26 @@
 #include "nx_graphics.h"
 #include "nx_touch.h"
 
+#ifdef __SWITCH2__
+#include <switch2/runtime/dynlink.h>
+
+// The string that explains a program's load result, or StrId_Max for a
+// result without one. The loader writes the details, such as a missing
+// library's name, to sdmc:/kaihen/nro-cleanup.txt.
+static StrId loadResultExplanation(Result result) {
+    switch (result) {
+    case DYNLINK_RESULT_NOT_LINKED:         return StrId_LoadResult_NotLinked;
+    case DYNLINK_RESULT_LIBRARY_NOT_FOUND:  return StrId_LoadResult_LibraryNotFound;
+    case DYNLINK_RESULT_LIBRARY_NOT_LOADED: return StrId_LoadResult_LibraryNotLoaded;
+    case DYNLINK_RESULT_UNDEFINED_SYMBOL:   return StrId_LoadResult_UndefinedSymbol;
+    case DYNLINK_RESULT_BAD_RELOCATION:     return StrId_LoadResult_BadRelocation;
+    case DYNLINK_RESULT_PRELOAD_NOT_LOADED: return StrId_LoadResult_PreloadNotLoaded;
+    case DYNLINK_RESULT_NO_RUNTIME_LIBRARY: return StrId_LoadResult_NoRuntimeLibrary;
+    default:                                return StrId_Max;
+    }
+}
+#endif
+
 // Define the desired framebuffer resolution (here we set it to 720p).
 #ifdef __SWITCH2__
 // Switch 2 draws at the window's size, which follows the console's default
@@ -42,7 +62,7 @@ int main(int argc, char **argv)
     bool error_screen=0;
     Result lastret=0;
     Result rc=0;
-    char msg[256];
+    char msg[768];
     char errormsg[256];//Can't use StrId for these error messages since it would be unavailable if textInit fails.
 
     #ifdef PERF_LOG
@@ -136,6 +156,16 @@ int main(int argc, char **argv)
             memset(msg, 0, sizeof(msg));
             snprintf(msg, sizeof(msg)-1, "%s\n2%03d-%04d", textGetString(StrId_LastLoadResult), R_MODULE(lastret), R_DESCRIPTION(lastret));
 
+            #ifdef __SWITCH2__
+            const StrId explanation = loadResultExplanation(lastret);
+            if (explanation != StrId_Max) {
+                const size_t used = strlen(msg);
+                snprintf(msg + used, sizeof(msg) - 1 - used, "\n\n%s\nDetails: sdmc:/kaihen/nro-cleanup.txt", textGetString(explanation));
+                // The box draws no text at all if the text does not fit.
+                menuCreateMsgBox(900, 420, msg);
+            }
+            else
+            #endif
             menuCreateMsgBox(780, 300, msg);
         }
     }
