@@ -216,6 +216,220 @@ static bool menuEntryLoadExternalNacp(menuEntry_s* me, const char* path) {
     } while (lastc);
 }*/
 
+static bool menuEntryFindDirIcon(const char* dir_path, char* out, size_t out_sz) {
+    static const char* const subdirs[] = {
+        "",
+        "/control",
+        "/control/romfs",
+        "/game",
+        "/game/control",
+        "/game/control/romfs",
+        "/meta",
+    };
+    static const char* const names[] = {
+        "icon_AmericanEnglish.dat",
+        "icon_BritishEnglish.dat",
+        "icon_Japanese.dat",
+        "icon.jpg",
+        "icon.png",
+    };
+    for (size_t s = 0; s < sizeof(subdirs) / sizeof(subdirs[0]); s++) {
+        for (size_t n = 0; n < sizeof(names) / sizeof(names[0]); n++) {
+            snprintf(out, out_sz, "%s%s/%s", dir_path, subdirs[s], names[n]);
+            if (fileExists(out))
+                return true;
+        }
+    }
+    for (size_t s = 0; s < sizeof(subdirs) / sizeof(subdirs[0]); s++) {
+        char scan_dir[PATH_MAX + 32];
+        snprintf(scan_dir, sizeof(scan_dir), "%s%s", dir_path, subdirs[s]);
+        DIR* d = opendir(scan_dir);
+        if (!d)
+            continue;
+        struct dirent* de;
+        bool found = false;
+        while ((de = readdir(d)) != NULL) {
+            if (strncmp(de->d_name, "icon_", 5) == 0) {
+                snprintf(out, out_sz, "%s/%s", scan_dir, de->d_name);
+                if (fileExists(out)) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        closedir(d);
+        if (found)
+            return true;
+    }
+    // Also check one level of non-exefs/romfs child directories (e.g. <game>/control_<tid>/)
+    DIR* root_d = opendir(dir_path);
+    if (root_d) {
+        struct dirent* de;
+        while ((de = readdir(root_d)) != NULL) {
+            if (de->d_name[0] == '.' ||
+                strcmp(de->d_name, "exefs") == 0 ||
+                strcmp(de->d_name, "romfs") == 0 ||
+                strcmp(de->d_name, "romfs_update") == 0 ||
+                strcmp(de->d_name, "dlc") == 0 ||
+                strcmp(de->d_name, "aoc") == 0)
+                continue;
+            char sub[PATH_MAX + 32];
+            snprintf(sub, sizeof(sub), "%s/%s", dir_path, de->d_name);
+            struct stat st;
+            if (stat(sub, &st) != 0 || !S_ISDIR(st.st_mode))
+                continue;
+            for (size_t n = 0; n < sizeof(names) / sizeof(names[0]); n++) {
+                snprintf(out, out_sz, "%s/%s", sub, names[n]);
+                if (fileExists(out)) {
+                    closedir(root_d);
+                    return true;
+                }
+            }
+            DIR* sub_d = opendir(sub);
+            if (sub_d) {
+                struct dirent* sde;
+                while ((sde = readdir(sub_d)) != NULL) {
+                    if (strncmp(sde->d_name, "icon_", 5) == 0) {
+                        snprintf(out, out_sz, "%s/%s", sub, sde->d_name);
+                        if (fileExists(out)) {
+                            closedir(sub_d);
+                            closedir(root_d);
+                            return true;
+                        }
+                    }
+                }
+                closedir(sub_d);
+            }
+        }
+        closedir(root_d);
+    }
+    return false;
+}
+
+static bool menuEntryFindDirNacp(const char* dir_path, char* out, size_t out_sz) {
+    static const char* const fixed[] = {
+        "control.nacp",
+        "control/control.nacp",
+        "control/romfs/control.nacp",
+        "game/control.nacp",
+        "game/control/control.nacp",
+        "game/control/romfs/control.nacp",
+        "meta/control.nacp",
+    };
+    for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
+        snprintf(out, out_sz, "%s/%s", dir_path, fixed[i]);
+        if (fileExists(out))
+            return true;
+    }
+    return false;
+}
+
+static uint8_t detectGamePlatformFromDir(const char* game_dir) {
+    static const char* const rels[] = { "exefs/main.npdm", "game/exefs/main.npdm" };
+    for (size_t i = 0; i < sizeof(rels) / sizeof(rels[0]); i++) {
+        char path[PATH_MAX + 32];
+        snprintf(path, sizeof(path), "%s/%s", game_dir, rels[i]);
+        FILE* f = fopen(path, "rb");
+        if (!f) continue;
+        uint8_t hdr[0x80];
+        if (fread(hdr, 1, sizeof(hdr), f) == sizeof(hdr) && memcmp(hdr, "META", 4) == 0) {
+            uint32_t aci0_off = 0, aci0_sz = 0;
+            memcpy(&aci0_off, hdr + 0x70, 4);
+            memcpy(&aci0_sz, hdr + 0x74, 4);
+            if (aci0_sz >= 0x18 && fseek(f, (long)aci0_off, SEEK_SET) == 0) {
+                uint8_t aci0[0x18];
+                if (fread(aci0, 1, sizeof(aci0), f) == sizeof(aci0) && memcmp(aci0, "ACI0", 4) == 0) {
+                    uint64_t tid = 0;
+                    memcpy(&tid, aci0 + 0x10, 8);
+                    fclose(f);
+                    return ((tid >> 56) == 0x04) ? 2 : 1;
+                }
+            }
+        }
+        fclose(f);
+    }
+    return 1;
+}
+
+bool menuEntryLoadGameShortcut(menuEntry_s* me, const char* name, const char* loader_nro,
+                               const char* game_dir, const char* icon_override, bool trace_mode) {
+    if (!me || !loader_nro || !game_dir || !fileExists(loader_nro))
+        return false;
+
+    const char* suffix = NULL;
+    const char* explicit_name = name;
+    if (name && name[0] == '+') {
+        suffix = name + 1;
+        explicit_name = NULL;
+    }
+
+    const char* fallback_base = strrchr(game_dir, '/');
+    fallback_base = (fallback_base && fallback_base[1]) ? (fallback_base + 1) : game_dir;
+
+    snprintf(me->path, sizeof(me->path), "%s", loader_nro);
+    me->game_platform = detectGamePlatformFromDir(game_dir);
+    strncpy(me->name, (explicit_name && explicit_name[0]) ? explicit_name : fallback_base, sizeof(me->name) - 1);
+    strncpy(me->author, textGetString(StrId_DefaultPublisher), sizeof(me->author) - 1);
+    strncpy(me->version, "1.0.0", sizeof(me->version) - 1);
+
+    // Search game_dir, parent (e.g. game/), and grandparent (<App>/) for control.nacp & icon
+    char bases[3][PATH_MAX + 8];
+    int base_count = 0;
+    snprintf(bases[base_count++], sizeof(bases[0]), "%s", game_dir);
+    for (int up = 0; up < 2; up++) {
+        char tmp[PATH_MAX + 8];
+        snprintf(tmp, sizeof(tmp), "%s", bases[base_count - 1]);
+        size_t len = strlen(tmp);
+        while (len > 1 && tmp[len - 1] == '/') tmp[--len] = '\0';
+        char* slash = strrchr(tmp, '/');
+        if (!slash || slash <= tmp + 5)
+            break;
+        *slash = '\0';
+        snprintf(bases[base_count++], sizeof(bases[0]), "%s", tmp);
+    }
+
+    bool iconLoaded = false;
+    char probe[PATH_MAX + 64];
+    if (icon_override && icon_override[0] && fileExists(icon_override))
+        iconLoaded = menuEntryLoadExternalIcon(me, icon_override, false);
+    for (int i = 0; i < base_count && !iconLoaded; i++) {
+        if (menuEntryFindDirIcon(bases[i], probe, sizeof(probe)))
+            iconLoaded = menuEntryLoadExternalIcon(me, probe, false);
+    }
+    if (!iconLoaded)
+        iconLoaded = menuEntryLoadEmbeddedIcon(me);
+    if (iconLoaded)
+        menuEntryParseIcon(me);
+
+    launchMenuEntryLoadABIRevision(me);
+
+    bool nacpLoaded = false;
+    for (int i = 0; i < base_count && !nacpLoaded; i++) {
+        if (menuEntryFindDirNacp(bases[i], probe, sizeof(probe)))
+            nacpLoaded = menuEntryLoadExternalNacp(me, probe);
+    }
+    if (nacpLoaded)
+        menuEntryParseNacp(me);
+    // Keep explicit shortcut display name if provided; otherwise append optional subprogram suffix
+    if (explicit_name && explicit_name[0]) {
+        memset(me->name, 0, sizeof(me->name));
+        strncpy(me->name, explicit_name, sizeof(me->name) - 1);
+    } else if (suffix && suffix[0]) {
+        const size_t cur = strlen(me->name);
+        const size_t slen = strlen(suffix);
+        if (cur + slen < sizeof(me->name))
+            memcpy(me->name + cur, suffix, slen + 1);
+    }
+
+    argData_s* ad = &me->args;
+    ad->dst = (char*)&ad->buf[1];
+    launchAddArg(ad, me->path);
+    launchAddArg(ad, game_dir);
+    if (trace_mode)
+        launchAddArg(ad, "--trace");
+    return true;
+}
+
 bool menuEntryLoad(menuEntry_s* me, const char* name, bool shortcut, bool check_exists) {
     int i=0, tmplen;
     menu_s *menu_fileassoc = menuFileassocGetCurrent();
@@ -791,25 +1005,23 @@ void menuEntryParseIcon(menuEntry_s* me) {
     ThemeLayoutObject *layoutobj = &themeCurrent.layoutObjects[ThemeLayoutId_MenuActiveEntryIcon];
     ThemeLayoutObject *layoutobj2 = &themeCurrent.layoutObjects[ThemeLayoutId_MenuListIcon];
 
-    // Icons are JPEG, or PNG, which can have transparency.
+    // Icons are JPEG (Switch 1 256x256 or Switch 2 512x512+ icon_*.dat), or PNG.
     bool is_png = me->icon_size >= sizeof(png_signature) && memcmp(me->icon, png_signature, sizeof(png_signature)) == 0;
     ImageMode mode = is_png ? IMAGE_MODE_RGBA32 : IMAGE_MODE_RGB24;
 
-    size_t imagesize = layoutobj->imageSize[0]*layoutobj->imageSize[1]*(is_png ? 4 : 3);
-    bool ret=true;
-    uint8_t *tmp_gfx = (uint8_t*)malloc(imagesize);
+    uint8_t *tmp_gfx = NULL;
+    int src_w = 0, src_h = 0;
+    bool ret = false;
 
-    if (tmp_gfx == NULL) ret = false;
-
-    if (ret && is_png) {
-        ret = assetsLoadPngFromMemory(me->icon, me->icon_size, tmp_gfx, mode, layoutobj->imageSize[0], layoutobj->imageSize[1]);
-        if (ret) bleedTransparentPixels(tmp_gfx, layoutobj->imageSize[0], layoutobj->imageSize[1]);
+    if (is_png) {
+        ret = assetsLoadPngFromMemoryAny(me->icon, me->icon_size, &tmp_gfx, mode, &src_w, &src_h);
+        if (ret) bleedTransparentPixels(tmp_gfx, src_w, src_h);
     }
-    else if (ret) {
-        ret = assetsLoadJpgFromMemory(me->icon, me->icon_size, tmp_gfx, mode, layoutobj->imageSize[0], layoutobj->imageSize[1]);
+    else {
+        ret = assetsLoadJpgFromMemoryAny(me->icon, me->icon_size, &tmp_gfx, mode, &src_w, &src_h);
     }
 
-    if (ret) me->icon_gfx = downscaleImg(tmp_gfx, layoutobj->imageSize[0], layoutobj->imageSize[1], layoutobj->size[0], layoutobj->size[1], mode);
+    if (ret) me->icon_gfx = downscaleImg(tmp_gfx, src_w, src_h, layoutobj->size[0], layoutobj->size[1], mode);
 
     if (ret && me->icon_gfx==NULL) ret = false;
 
@@ -817,7 +1029,7 @@ void menuEntryParseIcon(menuEntry_s* me) {
     free(me->icon);
     me->icon = NULL;
 
-    if (ret) me->icon_gfx_small = downscaleImg(tmp_gfx, layoutobj->imageSize[0], layoutobj->imageSize[1], layoutobj2->size[0], layoutobj2->size[1], mode);
+    if (ret) me->icon_gfx_small = downscaleImg(tmp_gfx, src_w, src_h, layoutobj2->size[0], layoutobj2->size[1], mode);
 
     if (!ret || me->icon_gfx_small == NULL) {
         FreeImageBuffer(me->icon_gfx);
@@ -871,12 +1083,16 @@ uint8_t *downscaleImg(const uint8_t *image, int srcWidth, int srcHeight, int des
             sourceY = tmpy * yScale;
             pixelX = (int)sourceX;
             pixelY = (int)sourceY;
+            if (pixelX >= srcWidth) pixelX = srcWidth - 1;
+            if (pixelY >= srcHeight) pixelY = srcHeight - 1;
+            int pixelX1 = (pixelX + 1 < srcWidth) ? (pixelX + 1) : pixelX;
+            int pixelY1 = (pixelY + 1 < srcHeight) ? (pixelY + 1) : pixelY;
 
             // get colours from four surrounding pixels
             if (mode == IMAGE_MODE_RGBA32)
-                pos = ((pixelY + 0) * srcWidth + pixelX + 0) * 4;
+                pos = (pixelY * srcWidth + pixelX) * 4;
             else
-                pos = ((pixelY + 0) * srcWidth + pixelX + 0) * 3;
+                pos = (pixelY * srcWidth + pixelX) * 3;
 
             r1 = image[pos+0];
             g1 = image[pos+1];
@@ -887,9 +1103,9 @@ uint8_t *downscaleImg(const uint8_t *image, int srcWidth, int srcHeight, int des
 
 
             if (mode == IMAGE_MODE_RGBA32)
-                pos = ((pixelY + 0) * srcWidth + pixelX + 1) * 4;
+                pos = (pixelY * srcWidth + pixelX1) * 4;
             else
-                pos = ((pixelY + 0) * srcWidth + pixelX + 1) * 3;
+                pos = (pixelY * srcWidth + pixelX1) * 3;
 
             r2 = image[pos+0];
             g2 = image[pos+1];
@@ -900,9 +1116,9 @@ uint8_t *downscaleImg(const uint8_t *image, int srcWidth, int srcHeight, int des
 
 
             if (mode == IMAGE_MODE_RGBA32)
-                pos = ((pixelY + 1) * srcWidth + pixelX + 0) * 4;
+                pos = (pixelY1 * srcWidth + pixelX) * 4;
             else
-                pos = ((pixelY + 1) * srcWidth + pixelX + 0) * 3;
+                pos = (pixelY1 * srcWidth + pixelX) * 3;
 
             r3 = image[pos+0];
             g3 = image[pos+1];
@@ -913,9 +1129,9 @@ uint8_t *downscaleImg(const uint8_t *image, int srcWidth, int srcHeight, int des
 
 
             if (mode == IMAGE_MODE_RGBA32)
-                pos = ((pixelY + 1) * srcWidth + pixelX + 1) * 4;
+                pos = (pixelY1 * srcWidth + pixelX1) * 4;
             else
-                pos = ((pixelY + 1) * srcWidth + pixelX + 1) * 3;
+                pos = (pixelY1 * srcWidth + pixelX1) * 3;
 
             r4 = image[pos+0];
             g4 = image[pos+1];

@@ -8,7 +8,11 @@ bool netstatusGetDetails(AssetId *id) {
 
     rc = nifmGetInternetConnectionStatus(&contype, &wifiStrength, &connectionStatus);
     if (R_FAILED(rc)) {
-        *id = AssetId_airplane_icon;
+        bool wireless = true;
+        if (R_SUCCEEDED(nifmIsWirelessCommunicationEnabled(&wireless)) && !wireless)
+            *id = AssetId_airplane_icon;
+        else
+            *id = AssetId_wifi_none_icon;
         return true;
     }
 

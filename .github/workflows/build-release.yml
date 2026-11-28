@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: ISC
+# Builds Switch 2 hbmenu.nro using ounce-devkit.
+# Push to main/master publishes a commit-tagged release; tags (v* / YYYYMMDD*) publish versioned releases.
+name: Build & Release
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - 'v*'
+      - '[0-9]*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Switch 2 hbmenu.nro
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Pull ounce-devkit image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ounce-devkit:latest"
+          docker pull "$image"
+          docker tag "$image" ounce-devkit:latest
+
+      - name: Build hbmenu.nro
+        run: |
+          git clone --depth=1 https://github.com/Doofenshmirtz-Homebrew-Incorporated/okaihen.git /tmp/okaihen
+          docker run --rm -v "$PWD:/src" -v "/tmp/okaihen:/okaihen" -w /src ounce-devkit bash -euo pipefail -c '
+            make -C /okaihen/libkaihen -j"$(nproc)"
+            cp -r /okaihen/libkaihen/include/* /opt/devkitpro/portlibs/switch2/include/
+            cp /okaihen/libkaihen/build/libkaihen.a /okaihen/libkaihen/build/libkaihen_plugin.a /opt/devkitpro/portlibs/switch2/lib/
+            make -j"$(nproc)" -f switch2/Makefile
+          '
+          mkdir -p out
+          cp build/nro/nro/hbmenu.nro out/hbmenu.nro
+
+      - name: Package release bundle
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${GITHUB_SHA}"
+          fi
+          mkdir -p dist
+          cp out/hbmenu.nro dist/hbmenu.nro
+          (cd out && zip -q -r -X "../dist/ounce-hbmenu-${version}.zip" hbmenu.nro)
+          (cd dist && sha256sum "ounce-hbmenu-${version}.zip" hbmenu.nro > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ounce-hbmenu-${{ env.VERSION }}-${{ github.sha }}
+          path: dist/
+
+      - name: Publish GitHub Release (version tag or commit)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "ounce-hbmenu ${GITHUB_REF_NAME}" \
+              --generate-notes \
+              "dist/ounce-hbmenu-${VERSION}.zip" \
+              dist/hbmenu.nro \
+              dist/SHA256SUMS.txt
+          else
+            tag="build-${GITHUB_SHA}"
+            zip="dist/ounce-hbmenu-${VERSION}.zip"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release upload "$tag" --clobber \
+                "$zip" dist/hbmenu.nro dist/SHA256SUMS.txt
+              gh release edit "$tag" \
+                --prerelease=false \
+                --title "ounce-hbmenu ${GITHUB_SHA::7}" \
+                --notes "Build from commit ${GITHUB_SHA}."
+            else
+              gh release create "$tag" \
+                --target "$GITHUB_SHA" \
+                --title "ounce-hbmenu ${GITHUB_SHA::7}" \
+                --notes "Build from commit ${GITHUB_SHA}." \
+                "$zip" dist/hbmenu.nro dist/SHA256SUMS.txt
+            fi
+          fi

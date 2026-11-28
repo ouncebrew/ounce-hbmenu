@@ -1,4 +1,5 @@
 #include "common.h"
+#include <ctype.h>
 
 static menu_s s_menu[2];
 static menu_s s_menuFileassoc[2];
@@ -143,10 +144,326 @@ void menuReorder (void) {
     menuClear();
 }
 
+static char* trim_text(char* text) {
+    while (*text && isspace((unsigned char)*text))
+        text++;
+    char* end = text + strlen(text);
+    while (end > text && isspace((unsigned char)end[-1]))
+        end--;
+    *end = '\0';
+    return text;
+}
+
+static bool s_hideFolders;
+
+static void hiddenFoldersPath(char* out, size_t out_size) {
+    snprintf(out, out_size, "%s/config/nx-hbmenu/hidden_folders.txt",
+             menuGetRootBasePath());
+}
+
+static bool menuFolderHidden(const char* name) {
+    (void)name;
+    return s_hideFolders;
+}
+
+static void hiddenFoldersSave(void) {
+    char path[PATH_MAX + 32];
+    hiddenFoldersPath(path, sizeof(path));
+    FILE* file = fopen(path, "w");
+    if (!file)
+        return;
+    fprintf(file, "%d\n", s_hideFolders ? 1 : 0);
+    fclose(file);
+}
+
+void menuHiddenLoad(void) {
+    s_hideFolders = false;
+    char path[PATH_MAX + 32];
+    hiddenFoldersPath(path, sizeof(path));
+    FILE* file = fopen(path, "r");
+    if (!file)
+        return;
+    int value = 0;
+    if (fscanf(file, "%d", &value) == 1)
+        s_hideFolders = value != 0;
+    fclose(file);
+}
+
+bool menuHiddenFoldersEnabled(void) {
+    return s_hideFolders;
+}
+
+void menuHiddenToggle(void) {
+    s_hideFolders = !s_hideFolders;
+    hiddenFoldersSave();
+}
+
+void settingsMenuScan(const char* target) {
+    menuClear();
+    menu_s* menu = &s_menu[!s_curMenu];
+    if (getcwd(menu->dirname, PATH_MAX + 1) == NULL) {
+        snprintf(menu->dirname, sizeof(menu->dirname), "%s", target);
+    }
+    menuEntry_s* me = menuCreateEntry(ENTRY_TYPE_FOLDER);
+    if (!me)
+        return;
+    snprintf(me->path, sizeof(me->path), "settings/hide-folders");
+    snprintf(me->name, sizeof(me->name), "Hide folders: %s",
+             s_hideFolders ? "On" : "Off");
+    menuAddEntry(me);
+    menuSort();
+    s_curMenu = !s_curMenu;
+    menuClear();
+}
+
+void settingsMenuToggleCurrent(void) {
+    menu_s* menu = menuGetCurrent();
+    if (!menu || menu->curEntry < 0 || menu->curEntry >= menu->nEntries)
+        return;
+    s_hideFolders = !s_hideFolders;
+    hiddenFoldersSave();
+    settingsMenuScan(menuGetRootPath());
+    menu = menuGetCurrent();
+    if (menu->nEntries > 0)
+        menu->curEntry = 0;
+}
+
+static const char* menuEntryArg1(const menuEntry_s* entry) {
+    if (!entry || entry->args.buf[0] < 2)
+        return NULL;
+    const char* p = (const char*)&entry->args.buf[1];
+    const size_t avail = sizeof(entry->args.buf) - sizeof(uint32_t);
+    const size_t len0 = strnlen(p, avail);
+    if (len0 + 1 >= avail)
+        return NULL;
+    return p + len0 + 1;
+}
+
+static bool menuHasEntry(const char* path, const char* arg1) {
+    for (menuEntry_s* entry = s_menu[!s_curMenu].firstEntry; entry; entry = entry->next) {
+        if (strcmp(entry->path, path) != 0)
+            continue;
+        const char* existing_arg1 = menuEntryArg1(entry);
+        if (!arg1 && !existing_arg1)
+            return true;
+        if (arg1 && existing_arg1 && strcmp(existing_arg1, arg1) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool isRawGameDir(const char* dir_path) {
+    struct stat st;
+    if (stat(dir_path, &st) != 0 || !S_ISDIR(st.st_mode))
+        return false;
+    char probe[PATH_MAX + 32];
+    snprintf(probe, sizeof(probe), "%s/exefs/main", dir_path);
+    if (fileExists(probe))
+        return true;
+    snprintf(probe, sizeof(probe), "%s/game/exefs/main", dir_path);
+    return fileExists(probe);
+}
+
+static bool findGameLoaderNro(char* out, size_t out_sz) {
+    static const char* const candidates[] = {
+        "sdmc:/switch/nup-loader/nup-loader.nro",
+        "sdmc:/switch/nup-loader.nro",
+        "sdmc:/kaihen/programs/nup-loader.nro",
+        "sdmc:/nup-loader.nro",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (fileExists(candidates[i])) {
+            snprintf(out, out_sz, "%s", candidates[i]);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void menuLoadShortcuts(void) {
+    char path[PATH_MAX + 32];
+    snprintf(path, sizeof(path), "%s/shortcuts.txt", menuGetRootPath());
+    FILE* file = fopen(path, "r");
+    if (!file)
+        return;
+
+    char loader_nro[PATH_MAX + 8] = {};
+    const bool has_loader = findGameLoaderNro(loader_nro, sizeof(loader_nro));
+
+    char line[1024];
+    while (fgets(line, sizeof(line), file)) {
+        char* text = trim_text(line);
+        if (!text[0] || text[0] == '#')
+            continue;
+        char* separator = strchr(text, '=');
+        const bool had_eq = (separator != NULL);
+        if (!separator)
+            separator = strchr(text, '|');
+        if (!separator)
+            continue;
+        *separator = '\0';
+        char* name = trim_text(text);
+        char* rhs = trim_text(separator + 1);
+        char* icon_override = NULL;
+        bool trace_mode = false;
+
+        // Parse optional |icon=sdmc:/... and |trace modifiers when '=' separated name=target
+        if (had_eq) {
+            char* mod = strchr(rhs, '|');
+            while (mod) {
+                *mod = '\0';
+                char* opt = trim_text(mod + 1);
+                char* next_mod = strchr(opt, '|');
+                if (next_mod)
+                    *next_mod = '\0';
+                opt = trim_text(opt);
+                if (strncmp(opt, "icon=", 5) == 0)
+                    icon_override = trim_text(opt + 5);
+                else if (strcmp(opt, "trace") == 0)
+                    trace_mode = true;
+                mod = next_mod;
+            }
+        }
+
+        char* target = trim_text(rhs);
+        size_t tlen = strlen(target);
+        while (tlen > 6 && target[tlen - 1] == '/')
+            target[--tlen] = '\0';
+        if (!name[0] || strncmp(target, "sdmc:/", 6) != 0)
+            continue;
+        if (tlen >= sizeof(((menuEntry_s*)0)->path))
+            continue;
+
+        if (isRawGameDir(target)) {
+            if (!has_loader || menuHasEntry(loader_nro, target))
+                continue;
+            menuEntry_s* entry = menuCreateEntry(ENTRY_TYPE_FILE);
+            if (!entry)
+                continue;
+            if (!menuEntryLoadGameShortcut(entry, name, loader_nro, target, icon_override, trace_mode)) {
+                menuDeleteEntry(entry, 0);
+                continue;
+            }
+            menuAddEntry(entry);
+            continue;
+        }
+
+        if (menuHasEntry(target, NULL))
+            continue;
+
+        menuEntry_s* entry = menuCreateEntry(ENTRY_TYPE_FILE);
+        if (!entry)
+            continue;
+        snprintf(entry->path, sizeof(entry->path), "%s", target);
+        if (!menuEntryLoad(entry, name, false, true)) {
+            menuDeleteEntry(entry, 0);
+            continue;
+        }
+        menuAddEntry(entry);
+    }
+    fclose(file);
+}
+
+#ifdef __SWITCH__
+extern bool hbPluginGetBool(const char* reg_name, const char* key, bool default_val) __attribute__((weak));
+#endif
+
+static bool isDirPath(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static void tryAddAutoGame(const char* loader_nro, const char* game_dir,
+                           const char* folder_name, int prog_idx) {
+    if (!isRawGameDir(game_dir) || menuHasEntry(loader_nro, game_dir))
+        return;
+    menuEntry_s* entry = menuCreateEntry(ENTRY_TYPE_FILE);
+    if (!entry)
+        return;
+    char label_hint[64] = {};
+    const char* name_arg = NULL;
+    if (prog_idx == 1) {
+        snprintf(label_hint, sizeof(label_hint), "+ [Switch 2]");
+        name_arg = label_hint;
+    } else if (prog_idx > 1) {
+        snprintf(label_hint, sizeof(label_hint), "+ [P%d]", prog_idx);
+        name_arg = label_hint;
+    }
+    if (!menuEntryLoadGameShortcut(entry, name_arg, loader_nro, game_dir, NULL, false)) {
+        menuDeleteEntry(entry, 0);
+        return;
+    }
+    // If no NACP was found and game_dir ends with "programN", prefer parent folder_name + tag
+    if (prog_idx > 0 && folder_name && folder_name[0] &&
+        strncmp(entry->name, "program", 7) == 0) {
+        if (prog_idx == 1)
+            snprintf(entry->name, sizeof(entry->name), "%.42s [Switch 2]", folder_name);
+        else
+            snprintf(entry->name, sizeof(entry->name), "%.48s [P%d]", folder_name, prog_idx);
+    }
+    menuAddEntry(entry);
+}
+
+static void menuAutoScanGames(void) {
+    bool enabled = true;
+#ifdef __SWITCH__
+    if (hbPluginGetBool)
+        enabled = hbPluginGetBool("nupvfs", "games", true);
+#endif
+    if (!enabled)
+        return;
+
+    char loader_nro[PATH_MAX + 8] = {};
+    if (!findGameLoaderNro(loader_nro, sizeof(loader_nro)))
+        return;
+
+    static const char* const roots[] = {
+        "sdmc:/switch/KaiDump/dumps",
+        "sdmc:/backups",
+        "sdmc:/games",
+        "sdmc:/nup",
+        "sdmc:/NUX",
+        "sdmc:/backups/nup",
+        "sdmc:/backups/NUX",
+    };
+
+    for (size_t r = 0; r < sizeof(roots) / sizeof(roots[0]); r++) {
+        DIR* dir = opendir(roots[r]);
+        if (!dir)
+            continue;
+        struct dirent* dp;
+        while ((dp = readdir(dir)) != NULL) {
+            if (dp->d_name[0] == '.')
+                continue;
+            char full[PATH_MAX + 16];
+            snprintf(full, sizeof(full), "%s/%s", roots[r], dp->d_name);
+            if (!isDirPath(full))
+                continue;
+
+            tryAddAutoGame(loader_nro, full, dp->d_name, 0);
+
+            char prog_parent[PATH_MAX + 24];
+            snprintf(prog_parent, sizeof(prog_parent), "%s/game", full);
+            if (!isDirPath(prog_parent))
+                snprintf(prog_parent, sizeof(prog_parent), "%s", full);
+            for (int p = 1; p <= 7; p++) {
+                char prog_dir[PATH_MAX + 40];
+                snprintf(prog_dir, sizeof(prog_dir), "%s/program%d", prog_parent, p);
+                if (!isDirPath(prog_dir))
+                    break;
+                tryAddAutoGame(loader_nro, prog_dir, dp->d_name, p);
+            }
+        }
+        closedir(dir);
+    }
+}
+
 int menuScan(const char* target) {
     int pos;
     char dirsep[8];
 
+    const int previousEntry = s_menu[s_curMenu].curEntry;
+    menuClear();
     if (chdir(target) < 0) return 1;
     if (getcwd(s_menu[!s_curMenu].dirname, PATH_MAX+1) == NULL)
         return 1;
@@ -191,6 +508,10 @@ int menuScan(const char* target) {
         entrytype = (tmpstat.st_mode & S_IFMT) != S_IFREG;
         #endif
 
+        if (entrytype && strcmp(s_menu[!s_curMenu].dirname, menuGetRootPath()) == 0 &&
+            menuFolderHidden(dp->d_name))
+            continue;
+
         if (entrytype)
             me = menuCreateEntry(ENTRY_TYPE_FOLDER);
         else
@@ -216,7 +537,19 @@ int menuScan(const char* target) {
     }
 
     closedir(dir);
+    if (strcmp(s_menu[!s_curMenu].dirname, menuGetRootPath()) == 0) {
+        menuLoadShortcuts();
+        menuAutoScanGames();
+    }
     menuSort();
+
+    if (s_menu[!s_curMenu].nEntries > 0) {
+        s_menu[!s_curMenu].curEntry = previousEntry;
+        if (s_menu[!s_curMenu].curEntry >= s_menu[!s_curMenu].nEntries)
+            s_menu[!s_curMenu].curEntry = s_menu[!s_curMenu].nEntries - 1;
+        if (s_menu[!s_curMenu].curEntry < 0)
+            s_menu[!s_curMenu].curEntry = 0;
+    }
 
     // Swap the menu and clear the previous menu
     s_curMenu = !s_curMenu;

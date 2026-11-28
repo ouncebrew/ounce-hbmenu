@@ -25,9 +25,11 @@
 #include <stdint.h>
 
 enum RenderImageFormat {
-    RenderImageFormat_Rgb24,      /* upstream IMAGE_MODE_RGB24 */
-    RenderImageFormat_Rgba32,     /* upstream IMAGE_MODE_RGBA32 */
-    RenderImageFormat_AlphaMask,  /* RGBA32 alpha tinted by a colour (drawIcon) */
+    RenderImageFormat_Rgb24,          /* upstream IMAGE_MODE_RGB24 */
+    RenderImageFormat_Rgba32,         /* upstream IMAGE_MODE_RGBA32 */
+    RenderImageFormat_AlphaMask,      /* RGBA32 alpha tinted by a colour (drawIcon) */
+    RenderImageFormat_Rgb24Rounded,   /* RGB24 with anti-aliased Switch 2 rounded corners */
+    RenderImageFormat_Rgba32Rounded,  /* RGBA32 with anti-aliased Switch 2 rounded corners */
 };
 
 /* The open horizontal run of equal-colour pixels, in logical coordinates.
@@ -78,6 +80,24 @@ void renderImage(const void *pixels, int x, int y, int width, int height,
 void renderImageScaled(const void *pixels, int image_width, int image_height,
                        int x, int y, int width, int height,
                        enum RenderImageFormat format, uint32_t tint);
+
+/* Floating-point logical coordinates variant for smooth animations. */
+void renderImageScaledF(const void *pixels, int image_width, int image_height,
+                        float x, float y, float width, float height,
+                        enum RenderImageFormat format, uint32_t tint);
+
+/* Switch 2 HOME UI GPU primitives (logical coordinates, scaled natively). */
+void renderRectF(float x, float y, float w, float h, uint32_t color);
+void renderCircleF(float cx, float cy, float radius, uint32_t color);
+void renderStarF(float cx, float cy, float radius, uint32_t color);
+void renderNetloaderIconF(float cx, float cy, float radius, uint32_t color);
+void renderSettingsIconF(float cx, float cy, float radius, uint32_t color);
+void renderRoundedRectF(float x, float y, float w, float h, float radius, uint32_t color);
+void renderSoftShadowF(float x, float y, float w, float h, float radius, float spread, uint8_t alpha);
+void renderSwitch2FocusRingF(float x, float y, float w, float h, float radius, float thickness,
+                             float timer, uint32_t primary_color, uint32_t secondary_color);
+void renderSwitch2CircleFocusRingF(float cx, float cy, float radius, float thickness,
+                                   float timer, uint32_t primary_color, uint32_t secondary_color);
 
 /* Drops textures made from an image buffer that is about to be freed, and
  * any vector it was drawn from. */

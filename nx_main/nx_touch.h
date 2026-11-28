@@ -15,3 +15,8 @@ struct touchInfo_s {
 
 void touchInit(void);
 void handleTouch(menu_s* menu);
+void handleMouse(menu_s* menu);
+void drawMouseCursor(void);
+void mouseExit(void);
+void mouseControllerInput(void);
+bool mouseIsActive(void);

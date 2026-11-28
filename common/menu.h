@@ -43,6 +43,7 @@ struct menu_s_tag
     int curEntry;
     int xPos;
     int slideSpeed;
+    bool holdXPos;
 
     char dirname[PATH_MAX+1];
 };
@@ -79,6 +80,7 @@ struct menuEntry_s_tag
     ImageMode icon_mode; // pixel format of icon_gfx and icon_gfx_small
 
     bool starred;
+    uint8_t game_platform; // 0=homebrew, 1=Switch 1 game, 2=Switch 2 game
 
     NacpStruct *nacp;
 };
@@ -93,11 +95,20 @@ void menuEntryInit(menuEntry_s* me, MenuEntryType type);
 void menuEntryFree(menuEntry_s* me, bool skip_icongfx);
 bool fileExists(const char* path);
 bool menuEntryLoad(menuEntry_s* me, const char* name, bool shortcut, bool check_exists);
+bool menuEntryLoadGameShortcut(menuEntry_s* me, const char* name, const char* loader_nro,
+                               const char* game_dir, const char* icon_override, bool trace_mode);
 void menuEntryParseIcon(menuEntry_s* me);
 uint8_t *downscaleImg(const uint8_t *image, int srcWidth, int srcHeight, int destWidth, int destHeight, ImageMode mode);
 void menuEntryParseNacp(menuEntry_s* me);
 
 void menuEntryFileassocLoad(const char* filepath);
+
+void menuHiddenLoad(void);
+bool menuHiddenFoldersEnabled(void);
+void menuHiddenToggle(void);
+void settingsMenuScan(const char* target);
+void settingsMenuToggleCurrent(void);
+void settingsMenuStartup(void);
 
 menuEntry_s* menuCreateEntry(MenuEntryType type);
 
@@ -119,10 +130,14 @@ void launchMenuNetloaderTask();
 char *menuGetRootPath(void);
 char *menuGetRootBasePath(void);
 
+void menuScrollBy(menu_s* menu, int delta);
+void menuScrollPage(menu_s* menu, int direction);
 void menuHandleAButton(void);
 void menuHandleXButton(void);
 
 bool menuIsNetloaderActive(void);
+bool menuIsThemeMenuActive(void);
+bool menuIsSettingsMenu(void);
 
 #ifdef __cplusplus
 }

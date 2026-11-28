@@ -25,6 +25,9 @@ assetsDataEntry g_assetsDataList[AssetId_Max][2] = {
     GENASSET("wifi3_icon.bin", IMAGE_MODE_RGBA32, 24, 24),
     GENASSET("eth_icon.bin", IMAGE_MODE_RGBA32, 24, 24),
     GENASSET("eth_none_icon.bin", IMAGE_MODE_RGBA32, 24, 24),
+    GENASSET("cursor.bin", IMAGE_MODE_RGBA32, 32, 32),
+    GENASSET("cursor_hover.bin", IMAGE_MODE_RGBA32, 32, 32),
+    GENASSET("cursor_click.bin", IMAGE_MODE_RGBA32, 32, 32),
     GENASSET("", IMAGE_MODE_RGB24, 1280, 720),
 };
 
@@ -167,6 +170,74 @@ bool assetsLoadPngFromMemory(u8 *indata, size_t indata_size, u8 *outdata, ImageM
 
     png_image_free(&image);
 
+    return ret;
+}
+
+bool assetsLoadJpgFromMemoryAny(u8 *indata, size_t indata_size, u8 **outdata, ImageMode imageMode, int *out_w, int *out_h) {
+    if (!indata || !indata_size || !outdata || !out_w || !out_h)
+        return false;
+    *outdata = NULL;
+    *out_w = 0;
+    *out_h = 0;
+
+    int w = 0, h = 0, samp = 0;
+    tjhandle dec = tjInitDecompress();
+    if (!dec)
+        return false;
+    if (tjDecompressHeader2(dec, indata, indata_size, &w, &h, &samp) == -1 ||
+        w <= 0 || h <= 0 || w > 2048 || h > 2048) {
+        tjDestroy(dec);
+        return false;
+    }
+    const size_t bpp = (imageMode == IMAGE_MODE_RGBA32) ? 4 : 3;
+    u8 *buf = (u8*)malloc((size_t)w * (size_t)h * bpp);
+    if (!buf) {
+        tjDestroy(dec);
+        return false;
+    }
+    if (tjDecompress2(dec, indata, indata_size, buf, w, 0, h,
+                      imageMode == IMAGE_MODE_RGB24 ? TJPF_RGB : TJPF_RGBA,
+                      TJFLAG_ACCURATEDCT) == -1) {
+        free(buf);
+        tjDestroy(dec);
+        return false;
+    }
+    tjDestroy(dec);
+    *outdata = buf;
+    *out_w = w;
+    *out_h = h;
+    return true;
+}
+
+bool assetsLoadPngFromMemoryAny(u8 *indata, size_t indata_size, u8 **outdata, ImageMode imageMode, int *out_w, int *out_h) {
+    if (!indata || !indata_size || !outdata || !out_w || !out_h)
+        return false;
+    *outdata = NULL;
+    *out_w = 0;
+    *out_h = 0;
+
+    png_image image;
+    memset(&image, 0, sizeof(image));
+    image.version = PNG_IMAGE_VERSION;
+    bool ret = false;
+    if (png_image_begin_read_from_memory(&image, indata, indata_size) != 0) {
+        if (image.width > 0 && image.height > 0 && image.width <= 2048 && image.height <= 2048) {
+            const size_t bpp = (imageMode == IMAGE_MODE_RGBA32) ? 4 : 3;
+            u8 *buf = (u8*)malloc((size_t)image.width * (size_t)image.height * bpp);
+            if (buf) {
+                image.format = (imageMode == IMAGE_MODE_RGB24) ? PNG_FORMAT_RGB : PNG_FORMAT_RGBA;
+                if (png_image_finish_read(&image, NULL, buf, 0, NULL) != 0) {
+                    *outdata = buf;
+                    *out_w = (int)image.width;
+                    *out_h = (int)image.height;
+                    ret = true;
+                } else {
+                    free(buf);
+                }
+            }
+        }
+    }
+    png_image_free(&image);
     return ret;
 }
 
